@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="token" content="__TOKEN__">
+  <title>Claude Code – local</title>
+  <link rel="stylesheet" href="/style.css?token=__TOKEN__">
+</head>
+<body>
+  <header>
+    <h1>Claude Code <small>local only</small></h1>
+    <nav>
+      <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="runs">Runs</button>
+      <button data-tab="usage">Usage</button>
+    </nav>
+  </header>
+  <p id="banner" hidden></p>
+
+  <main>
+    <section id="tab-chat">
+      <div class="row">
+        <label>Project <select id="project"></select></label>
+        <label>Mode
+          <select id="mode"><option value="plan">plan (read-only)</option><option value="acceptEdits">acceptEdits</option></select>
+        </label>
+        <label>Model <input id="model" placeholder="default" size="10"></label>
+      </div>
+      <div class="cols">
+        <aside>
+          <h2>Past sessions <button id="reload-sessions" title="Reload">↻</button></h2>
+          <ul id="sessions"></ul>
+        </aside>
+        <div class="convo">
+          <div class="row"><strong id="convo-title">New conversation</strong>
+            <button id="new-convo">New</button>
+            <button id="stop-current" hidden>Stop</button>
+          </div>
+          <pre id="output" aria-live="polite"></pre>
+          <form id="prompt-form">
+            <textarea id="prompt" rows="3" placeholder="Prompt for Claude Code…" required></textarea>
+            <button type="submit">Send</button>
+          </form>
+          <div class="simple">
+            <label><input type="checkbox" id="simple-toggle"> Simplified view</label>
+            <small>Summarized by <code>__SUMMARY_MODEL__</code> on this machine</small>
+            <button id="simple-refresh">Refresh summary</button>
+            <div id="simple-text"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-runs" hidden>
+      <div class="row"><button id="reload-runs">Reload</button><label><input type="checkbox" id="active-only"> Active only</label></div>
+      <table><thead><tr><th>Status</th><th>Project</th><th>Started</th><th>Prompt</th><th></th></tr></thead><tbody id="runs"></tbody></table>
+      <h2 id="run-title"></h2>
+      <pre id="run-output"></pre>
+    </section>
+
+    <section id="tab-usage" hidden>
+      <button id="reload-usage">Reload</button>
+      <div id="usage"></div>
+    </section>
+  </main>
+  <script src="/app.js?token=__TOKEN__"></script>
+</body>
+</html>
