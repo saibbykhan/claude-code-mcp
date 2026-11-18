@@ -67,6 +67,11 @@ const run = (await call("claude_run", { folder: "proj", prompt: "ping", continue
 assert.equal(run.permissionMode, "plan");
 assert.equal(run.forked, true);
 await waitFor(run.runId, "completed");
+{ // the run created a task on the board
+  const tasks = JSON.parse(fs.readFileSync(path.join(tmp, "data", "tasks.json"), "utf8")).tasks;
+  const t = tasks.find((x) => x.runId === run.runId);
+  assert.ok(t && t.id === run.taskId && t.state === "running" && t.prompt === "ping", "claude_run creates a task");
+}
 const out = (await call("claude_output", { runId: run.runId })).data;
 assert.match(out.output, /--permission-mode plan --model haiku --resume \S+ --fork-session/);
 assert.match(out.output, /echo: ping key=\[MASKED\] mail s\*\*\*@example\.com/);

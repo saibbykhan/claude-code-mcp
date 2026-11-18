@@ -7,6 +7,7 @@ import { deepMask, truncate } from "./mask.js";
 import { BYPASS_ENV, resolvePermissionMode } from "./permissions.js";
 import type { RunManager } from "./runner.js";
 import { MAX_CONCURRENT_RUNS, type RunStore } from "./runStore.js";
+import type { TaskStore } from "./taskStore.js";
 import { isValidSessionId, listSessionFiles, MAX_TAIL_TURNS, parseSessionFile, sessionsDir } from "./sessions.js";
 import { readUsage } from "./usage.js";
 
@@ -51,8 +52,8 @@ function guard<A>(fn: (args: A) => Promise<ToolResult> | ToolResult) {
   };
 }
 
-export function createServer(deps: { store: RunStore; manager: RunManager; env?: Record<string, string | undefined> }): McpServer {
-  const { store, manager } = deps;
+export function createServer(deps: { store: RunStore; manager: RunManager; tasks?: TaskStore; env?: Record<string, string | undefined> }): McpServer {
+  const { store, manager, tasks } = deps;
   const env = deps.env ?? process.env;
   const server = new McpServer({ name: "claude-code-mcp", version: "0.1.0" }, { instructions: INSTRUCTIONS });
 
@@ -158,18 +159,29 @@ export function createServer(deps: { store: RunStore; manager: RunManager; env?:
       }
       if (continueSessionId !== undefined && !isValidSessionId(continueSessionId)) throw new Error("continueSessionId must be a UUID.");
       if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,80}$/.test(model)) throw new Error("model contains unsupported characters.");
-      const rec = manager.start({
-        claudeBin: config.claudeBin,
-        folder: project.path,
-        project: project.name,
-        prompt,
-        permissionMode: gate.mode,
-        model,
-        continueSessionId,
-        fork: fork ?? true,
-      });
+      // Every run belongs to a task for the board. Replying in place to a known session re-opens its task.
+      const resume = tasks && continueSessionId && fork === false ? tasks.findBySession(continueSessionId) : undefined;
+      const task = resume ?? tasks?.create({ prompt, folder: project.path, project: project.name, sessionId: continueSessionId && fork === false ? continueSessionId : null });
+      let rec;
+      try {
+        rec = manager.start({
+          claudeBin: config.claudeBin,
+          folder: project.path,
+          project: project.name,
+          prompt,
+          permissionMode: gate.mode,
+          model,
+          continueSessionId,
+          fork: fork ?? true,
+        });
+      } catch (e) {
+        if (task && !resume) tasks?.transition(task.id, "failed", { error: (e as Error).message });
+        throw e;
+      }
+      if (task) tasks?.transition(task.id, "running", { runId: rec.id });
       return ok({
         runId: rec.id,
+        ...(task ? { taskId: task.id } : {}),
         status: rec.status,
         folder: rec.folder,
         permissionMode: rec.permissionMode,

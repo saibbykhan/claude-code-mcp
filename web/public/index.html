@@ -12,6 +12,7 @@
     <h1>Claude Code <small>local only</small></h1>
     <nav>
       <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="tasks">Tasks<span id="badge" class="badge" hidden></span></button>
       <button data-tab="runs">Runs</button>
       <button data-tab="usage">Usage</button>
     </nav>
@@ -52,11 +53,28 @@
       </div>
     </section>
 
+    <section id="tab-tasks" hidden>
+      <div class="row">
+        <strong id="live-state">Connecting…</strong>
+        <button id="enable-notify" hidden>Enable notifications</button>
+        <small>Cards update by themselves. Click a card to open its conversation.</small>
+      </div>
+      <div id="board-active" class="board sticky"></div>
+      <h2>Recent</h2>
+      <div id="board-recent" class="board"></div>
+    </section>
+
     <section id="tab-runs" hidden>
       <div class="row"><button id="reload-runs">Reload</button><label><input type="checkbox" id="active-only"> Active only</label></div>
       <table><thead><tr><th>Status</th><th>Project</th><th>Started</th><th>Prompt</th><th></th></tr></thead><tbody id="runs"></tbody></table>
       <h2 id="run-title"></h2>
+      <div class="row"><button id="run-stop" hidden>Stop</button></div>
       <pre id="run-output"></pre>
+      <form id="reply-form" hidden>
+        <textarea id="reply" rows="3" placeholder="Reply to continue this session…" required></textarea>
+        <label>Mode <select id="reply-mode"><option value="plan">plan (read-only)</option><option value="acceptEdits">acceptEdits</option></select></label>
+        <button type="submit">Send reply</button>
+      </form>
     </section>
 
     <section id="tab-usage" hidden>
