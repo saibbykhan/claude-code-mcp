@@ -1,0 +1,7 @@
+{
+  "projects": [
+    { "name": "my-app", "path": "~/Documents/my-app" },
+    { "name": "notes", "path": "/Users/you/Documents/notes" }
+  ],
+  "claudeBin": "claude"
+}
