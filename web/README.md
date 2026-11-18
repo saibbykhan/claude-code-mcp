@@ -63,3 +63,10 @@ Model: `haiku` by default. Change it with `CLAUDE_MCP_WEB_SUMMARY_MODEL=sonnet n
 ## Tests
 
 `npm test` runs the existing server tests plus `web/test/*.test.mjs` (token check, Host/Origin check, summarizer input handling, HTTP routes with a fake tool backend).
+
+## LAN mode (opt-in)
+
+Off by default (binds 127.0.0.1 only). Set `CLAUDE_MCP_WEB_LAN=1` or pass `--lan` to bind to this Mac's private LAN IPv4 instead
+(`ipconfig getifaddr en0`, else the first 192.168.x.x / 10.x.x.x / 172.16-31.x.x address). It never binds 0.0.0.0 or a public
+address and refuses to start if no private address exists. The Host check additionally accepts `<lan-ip>:<port>`; Origin must still
+be the same origin and the token is required on every request. Anyone on the same network who has the token can reach the page.

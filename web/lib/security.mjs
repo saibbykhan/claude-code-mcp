@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isPrivateLanIPv4 } from "./lan.mjs";
 
 /** Read the token file, creating it (mode 600, random 256-bit) if missing. Refuses loose permissions. */
 export function loadOrCreateToken(file) {
@@ -41,21 +42,24 @@ export function tokenOk(provided, token) {
   return Boolean(provided) && safeEqual(provided, token);
 }
 
-/** Host must be exactly this server's loopback address; Origin (if sent) must be the same origin. */
-export function hostOriginOk(headers, port) {
+/** Host must be exactly this server's loopback address (or, in LAN mode, its private LAN address); Origin (if sent) must be the same origin. */
+export function hostOriginOk(headers, port, lanAddress = null) {
+  const lan = isPrivateLanIPv4(lanAddress) ? lanAddress : null; // a non-private value is ignored, never allowed
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  if (lan) allowedHosts.add(`${lan}:${port}`);
   if (!allowedHosts.has(headers.host ?? "")) return { ok: false, status: 403, error: "forbidden host" };
   const origin = headers.origin;
   if (origin !== undefined) {
     const allowedOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+    if (lan) allowedOrigins.add(`http://${lan}:${port}`);
     if (!allowedOrigins.has(origin)) return { ok: false, status: 403, error: "forbidden origin" };
   }
   return { ok: true };
 }
 
 /** Full gate applied to every request, in order: host/origin, then token. */
-export function checkRequest(req, port, token) {
-  const h = hostOriginOk(req.headers, port);
+export function checkRequest(req, port, token, lanAddress = null) {
+  const h = hostOriginOk(req.headers, port, lanAddress);
   if (!h.ok) return h;
   if (!tokenOk(tokenFromRequest(req.headers, req.url), token)) return { ok: false, status: 401, error: "unauthorized" };
   return { ok: true };

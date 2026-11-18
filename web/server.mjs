@@ -13,11 +13,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { deepMask } from "../dist/src/mask.js";
 import { checkRequest, loadOrCreateToken } from "./lib/security.mjs";
+import { lanRequested, resolveBind } from "./lib/lan.mjs";
 import { TaskSummarizer } from "./lib/boardSummary.mjs";
 import { FolderError, addFolder, chooseFolderMac, configPathFor, listFolders, removeFolder } from "./lib/folders.mjs";
 import { summarize as defaultSummarize, summaryModel } from "./lib/summarizer.mjs";
 
-const HOST = "127.0.0.1"; // never configurable
+const HOST = "127.0.0.1"; // default bind; only the opt-in LAN mode (web/lib/lan.mjs) may use a private LAN address instead
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
 const MAX_BODY = 300_000;
@@ -53,7 +54,7 @@ function numeric(v) {
 }
 
 /** Build the HTTP server. `callTool(name, args)` returns the MCP CallToolResult; injectable for tests. */
-export function createWebServer({ port, token, callTool, summarize = defaultSummarize, claudeBin = "claude", env = process.env, configPath = configPathFor(env), home = os.homedir(), chooser = chooseFolderMac, taskStore, runStore, tickMs = 1500, fadeAfterMs = 10 * 60_000 }) {
+export function createWebServer({ port, lanAddress = null, token, callTool, summarize = defaultSummarize, claudeBin = "claude", env = process.env, configPath = configPathFor(env), home = os.homedir(), chooser = chooseFolderMac, taskStore, runStore, tickMs = 1500, fadeAfterMs = 10 * 60_000 }) {
   const baseHeaders = {
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
@@ -147,7 +148,7 @@ export function createWebServer({ port, token, callTool, summarize = defaultSumm
 
   const server = http.createServer(async (req, res) => {
     try {
-      const gate = checkRequest(req, port, token);
+      const gate = checkRequest(req, port, token, lanAddress);
       if (!gate.ok) return send(res, gate.status, { error: gate.error });
       const url = new URL(req.url ?? "/", `http://${HOST}`);
       const p = url.pathname;
@@ -240,6 +241,7 @@ async function main() {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid port.");
   const dataDir = process.env.CLAUDE_MCP_DATA_DIR || path.join(os.homedir(), "Library", "Application Support", "claude-code-mcp");
   const tokenFile = process.env.CLAUDE_MCP_WEB_TOKEN_FILE || path.join(dataDir, "web-token");
+  const { host: bindHost, lanAddress } = resolveBind({ lan: lanRequested() }); // throws (refuses to start) if LAN mode has no private address
   const token = loadOrCreateToken(tokenFile);
   const model = summaryModel(); // fail early on a bad model setting
 
@@ -256,16 +258,20 @@ async function main() {
 
   const fadeMin = Number(process.env.CLAUDE_MCP_BOARD_FADE_MINUTES ?? 10);
   const server = createWebServer({
-    port, token, callTool, claudeBin,
+    port, lanAddress, token, callTool, claudeBin,
     taskStore: new TaskStore(dataDir), runStore: new RunStore(dataDir),
     fadeAfterMs: (Number.isFinite(fadeMin) && fadeMin > 0 ? fadeMin : 10) * 60_000,
   });
   const shutdown = () => { server.close(); void client.close().finally(() => process.exit(0)); };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-  server.listen(port, HOST, () => {
-    const url = `http://${HOST}:${port}/?token=${token}`;
-    console.log(`claude-code-mcp web interface on http://${HOST}:${port}/ (summary model: ${model})`);
+  server.listen(port, bindHost, () => {
+    const url = `http://${bindHost}:${port}/?token=${token}`;
+    console.log(`claude-code-mcp web interface on http://${bindHost}:${port}/ (summary model: ${model})`);
+    if (lanAddress) {
+      console.log(`LAN mode: reachable only on this Wi-Fi/LAN at ${url}`);
+      console.log("WARNING: other devices on this network that have the token can reach this page. Do not share the URL.");
+    }
     console.log(`Token file: ${tokenFile} (mode 600)`);
     console.log(`Open: ${url}`);
     if (process.argv.includes("--open")) execFile("open", [url], () => {});
