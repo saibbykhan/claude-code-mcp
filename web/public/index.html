@@ -15,6 +15,7 @@
       <button data-tab="tasks">Tasks<span id="badge" class="badge" hidden></span></button>
       <button data-tab="runs">Runs</button>
       <button data-tab="usage">Usage</button>
+      <button data-tab="folders">Folders</button>
     </nav>
   </header>
   <p id="banner" hidden></p>
@@ -80,6 +81,18 @@
     <section id="tab-usage" hidden>
       <button id="reload-usage">Reload</button>
       <div id="usage"></div>
+    </section>
+    <section id="tab-folders" hidden>
+      <p>Folders Claude Code may work in. Removing a folder only removes it from the list; nothing on disk is deleted.</p>
+      <small id="folders-config"></small>
+      <table><thead><tr><th>Name</th><th>Path</th><th></th></tr></thead><tbody id="folders"></tbody></table>
+      <div class="row"><button id="add-folder">Add folder…</button><small id="choose-note"></small></div>
+      <form id="folder-form" class="folder-form" hidden>
+        <label>Path <input id="folder-path" size="50" placeholder="/Users/you/Documents/project" required></label>
+        <label>Name <input id="folder-name" size="24" placeholder="folder name"></label>
+        <button type="submit">Add</button>
+        <button type="button" id="folder-cancel">Cancel</button>
+      </form>
     </section>
   </main>
   <script src="/app.js?token=__TOKEN__"></script>
