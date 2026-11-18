@@ -46,3 +46,5 @@ td, th { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid #8883;
 .card.state-failed .state { color: #d33; }
 .card.state-stopped { border-left-color: #a6a; }
 #reply-form { margin-top: .6rem; }
+
+.folder-form { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; border: 1px solid #8884; border-radius: 6px; padding: .6rem; }

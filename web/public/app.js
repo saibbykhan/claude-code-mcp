@@ -23,9 +23,10 @@ const when = (iso) => (iso ? new Date(iso).toLocaleString() : "–");
 // ---- tabs
 document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
-  for (const t of ["chat", "tasks", "runs", "usage"]) $(`tab-${t}`).hidden = t !== b.dataset.tab;
+  for (const t of ["chat", "tasks", "runs", "usage", "folders"]) $(`tab-${t}`).hidden = t !== b.dataset.tab;
   if (b.dataset.tab === "runs") loadRuns();
   if (b.dataset.tab === "usage") loadUsage();
+  if (b.dataset.tab === "folders") loadFolders();
 }));
 
 // ---- chat state
@@ -283,3 +284,56 @@ async function liveBoard() {
   }
 }
 liveBoard();
+
+// ---- folders
+const loadFolders = guard(async () => {
+  const d = await api("/api/folders");
+  $("folders-config").textContent = `Config: ${d.configPath}`;
+  $("folders").replaceChildren(...(d.folders.length ? d.folders.map((f) => {
+    const tr = el("tr");
+    const rm = el("button", "Remove");
+    rm.addEventListener("click", guard(async () => {
+      if (!confirm(`Remove "${f.name}" from the approved list? Files on disk are not touched.`)) return;
+      await api("/api/folders/remove", { name: f.name });
+      await loadFolders();
+      await loadProjects();
+    }));
+    const td = el("td"); td.append(rm);
+    tr.append(el("td", f.name), el("td", f.exists ? f.path : `${f.path} (missing)`), td);
+    return tr;
+  }) : [(() => { const tr = el("tr"); tr.append(el("td", "No approved folders yet.", { colSpan: 3 })); return tr; })()]));
+});
+
+function showFolderForm(p) {
+  $("folder-form").hidden = false;
+  $("folder-path").value = p || "";
+  $("folder-name").value = p ? p.split("/").filter(Boolean).pop() || "" : "";
+  $("folder-path").focus();
+}
+$("add-folder").addEventListener("click", guard(async () => {
+  $("choose-note").textContent = "Waiting for the macOS folder chooser…";
+  try {
+    const d = await api("/api/folders/choose", {});
+    if (d.path) showFolderForm(d.path);
+    else $("choose-note").textContent = "Cancelled.";
+    if (d.path) $("choose-note").textContent = "Check the name, then press Add.";
+  } catch (e) {
+    $("choose-note").textContent = "";
+    showFolderForm("");
+    throw e; // shows the banner; the path field stays available as the fallback
+  }
+}));
+$("folder-path").addEventListener("input", () => {
+  if (!$("folder-name").dataset.touched) $("folder-name").value = $("folder-path").value.split("/").filter(Boolean).pop() || "";
+});
+$("folder-name").addEventListener("input", () => { $("folder-name").dataset.touched = "1"; });
+$("folder-cancel").addEventListener("click", () => { $("folder-form").hidden = true; $("choose-note").textContent = ""; });
+$("folder-form").addEventListener("submit", guard(async (ev) => {
+  ev.preventDefault();
+  await api("/api/folders/add", { path: $("folder-path").value, name: $("folder-name").value });
+  $("folder-form").hidden = true;
+  $("choose-note").textContent = "Added.";
+  delete $("folder-name").dataset.touched;
+  await loadFolders();
+  await loadProjects();
+}));

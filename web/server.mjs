@@ -14,6 +14,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { deepMask } from "../dist/src/mask.js";
 import { checkRequest, loadOrCreateToken } from "./lib/security.mjs";
 import { TaskSummarizer } from "./lib/boardSummary.mjs";
+import { FolderError, addFolder, chooseFolderMac, configPathFor, listFolders, removeFolder } from "./lib/folders.mjs";
 import { summarize as defaultSummarize, summaryModel } from "./lib/summarizer.mjs";
 
 const HOST = "127.0.0.1"; // never configurable
@@ -52,7 +53,7 @@ function numeric(v) {
 }
 
 /** Build the HTTP server. `callTool(name, args)` returns the MCP CallToolResult; injectable for tests. */
-export function createWebServer({ port, token, callTool, summarize = defaultSummarize, claudeBin = "claude", env = process.env, taskStore, runStore, tickMs = 1500, fadeAfterMs = 10 * 60_000 }) {
+export function createWebServer({ port, token, callTool, summarize = defaultSummarize, claudeBin = "claude", env = process.env, configPath = configPathFor(env), home = os.homedir(), chooser = chooseFolderMac, taskStore, runStore, tickMs = 1500, fadeAfterMs = 10 * 60_000 }) {
   const baseHeaders = {
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
@@ -171,6 +172,21 @@ export function createWebServer({ port, token, callTool, summarize = defaultSumm
         const allowed = p === "/api/run" ? ["folder", "prompt", "continueSessionId", "fork", "model", "permissionMode"] : ["runId"];
         const args = Object.fromEntries(Object.entries(body).filter(([k, v]) => allowed.includes(k) && v !== "" && v !== null));
         return await tool(res, POST_TOOLS[p], args);
+      }
+      if (p.startsWith("/api/folders")) {
+        const FOLDER_ROUTES = { "/api/folders": "GET", "/api/folders/choose": "POST", "/api/folders/add": "POST", "/api/folders/remove": "POST" };
+        if (!FOLDER_ROUTES[p]) return send(res, 404, { error: "not found" });
+        if (req.method !== FOLDER_ROUTES[p]) return send(res, 405, { error: "method not allowed" });
+        try {
+          if (p === "/api/folders") return send(res, 200, { folders: listFolders(configPath, { home }), configPath });
+          const body = await readBody(req);
+          if (p === "/api/folders/choose") return send(res, 200, await chooser());
+          if (p === "/api/folders/add") return send(res, 200, addFolder(configPath, { path: body.path, name: body.name }, { home }));
+          return send(res, 200, removeFolder(configPath, { name: body.name }, { home }));
+        } catch (e) {
+          if (e instanceof FolderError) return send(res, e.status, { error: e.message });
+          throw e;
+        }
       }
       if (req.method === "GET" && p === "/api/tasks") {
         tick();
