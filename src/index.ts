@@ -9,6 +9,7 @@ import { dataDir } from "./config.js";
 import { RunManager } from "./runner.js";
 import { RunStore } from "./runStore.js";
 import { createServer } from "./server.js";
+import { TaskStore } from "./taskStore.js";
 
 const HOST = "127.0.0.1"; // The only address this server ever binds. Not configurable.
 
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
   const dir = dataDir();
   const store = new RunStore(dir);
   const manager = new RunManager(store);
+  const tasks = new TaskStore(dir);
 
   let exiting = false;
   const shutdown = (code = 0) => {
@@ -77,7 +79,7 @@ async function main(): Promise<void> {
         if (req.method !== "POST") return deny(405, "method not allowed");
 
         // Stateless: a fresh MCP server + transport per request, sharing one run manager.
-        const server = createServer({ store, manager });
+        const server = createServer({ store, manager, tasks });
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
         res.on("close", () => {
           void transport.close();
@@ -94,7 +96,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const server = createServer({ store, manager });
+  const server = createServer({ store, manager, tasks });
   const transport = new StdioServerTransport();
   transport.onclose = () => shutdown(0);
   process.stdin.on("end", () => shutdown(0));

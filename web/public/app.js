@@ -23,7 +23,7 @@ const when = (iso) => (iso ? new Date(iso).toLocaleString() : "–");
 // ---- tabs
 document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
-  for (const t of ["chat", "runs", "usage"]) $(`tab-${t}`).hidden = t !== b.dataset.tab;
+  for (const t of ["chat", "tasks", "runs", "usage"]) $(`tab-${t}`).hidden = t !== b.dataset.tab;
   if (b.dataset.tab === "runs") loadRuns();
   if (b.dataset.tab === "usage") loadUsage();
 }));
@@ -106,13 +106,14 @@ $("simple-refresh").addEventListener("click", summarize);
 
 // ---- runs
 let shownRun = null;
+let shownInfo = null; // { project, sessionId } of the run in the viewer, used by the reply box
 const loadRuns = guard(async () => {
   const d = await api(`/api/runs?limit=50${$("active-only").checked ? "&activeOnly=true" : ""}`);
   $("runs").replaceChildren(...d.runs.map((r) => {
     const tr = el("tr");
     tr.append(el("td", r.status), el("td", r.project), el("td", when(r.startedAt)), el("td", r.promptPreview || ""));
     const td = el("td");
-    const view = el("button", "Output"); view.addEventListener("click", () => showRun(r.runId));
+    const view = el("button", "Output"); view.addEventListener("click", () => showRun(r.runId, { project: r.project }));
     td.append(view);
     if (r.status === "running") {
       const stop = el("button", "Stop");
@@ -123,12 +124,27 @@ const loadRuns = guard(async () => {
     return tr;
   }));
 });
-const showRun = guard(async (runId) => {
+const showRun = guard(async (runId, info) => {
+  if (shownRun !== runId) $("reply").value = "";
   shownRun = runId;
+  if (info) shownInfo = { ...shownInfo, ...info };
   const d = await api(`/api/output?runId=${runId}&maxChars=100000`);
+  shownInfo = { ...shownInfo, sessionId: d.sessionId || shownInfo?.sessionId };
+  const pre = $("run-output");
+  const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
   $("run-title").textContent = `Run ${runId.slice(0, 8)} – ${d.status}`;
-  $("run-output").textContent = d.output;
+  pre.textContent = d.output;
+  if (atEnd) pre.scrollTop = pre.scrollHeight;
+  $("run-stop").hidden = d.status !== "running";
+  $("reply-form").hidden = d.status === "running" || !shownInfo?.sessionId || !shownInfo?.project;
 });
+$("run-stop").addEventListener("click", guard(async () => { await api("/api/stop", { runId: shownRun }); await showRun(shownRun); }));
+$("reply-form").addEventListener("submit", guard(async (ev) => {
+  ev.preventDefault();
+  const run = await api("/api/run", { folder: shownInfo.project, prompt: $("reply").value, continueSessionId: shownInfo.sessionId, fork: false, permissionMode: $("reply-mode").value });
+  $("reply").value = "";
+  await showRun(run.runId);
+}));
 $("reload-runs").addEventListener("click", () => { loadRuns(); if (shownRun) showRun(shownRun); });
 $("active-only").addEventListener("change", loadRuns);
 
@@ -154,3 +170,116 @@ const loadUsage = guard(async () => {
 $("reload-usage").addEventListener("click", loadUsage);
 
 loadProjects();
+
+// ---- tasks board (live over Server-Sent Events, polling as the fallback)
+const DAY = 24 * 3600 * 1000;
+const LABEL = { queued: "Queued", running: "Running", waiting_for_you: "Waiting for you", done: "Done", failed: "Failed", stopped: "Stopped" };
+const ACTIVE = ["queued", "running", "waiting_for_you"];
+let board = { tasks: [], fadeAfterMs: 600000, skew: 0 };
+let knownStates = null; // null until the first snapshot, so opening the page does not fire a notification storm
+const elapsedEls = new Map();
+
+const fmtElapsed = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+};
+const serverNow = () => Date.now() + board.skew;
+const elapsedOf = (t) => (t.finishedAt ? new Date(t.finishedAt) : serverNow()) - new Date(t.createdAt);
+
+function card(t) {
+  const finished = !ACTIVE.includes(t.state);
+  const fade = finished && !t.pinned && serverNow() - new Date(t.finishedAt || t.updatedAt) > board.fadeAfterMs;
+  const c = el("div", "", { className: `card state-${t.state}${t.pinned ? " pinned" : ""}${fade ? " faded" : ""}`, tabIndex: 0 });
+  c.setAttribute("role", "button");
+  const pin = el("button", t.pinned ? "Unpin" : "Pin", { className: "pin", title: "Keep this card at the top" });
+  pin.addEventListener("click", guard(async (ev) => { ev.stopPropagation(); await api("/api/task/pin", { taskId: t.id, pinned: !t.pinned }); }));
+  const meta = el("div", "", { className: "meta" });
+  const elapsed = el("span", fmtElapsed(elapsedOf(t)));
+  if (!t.finishedAt) elapsedEls.set(elapsed, t);
+  meta.append(el("span", LABEL[t.state], { className: "state" }), elapsed, el("span", t.project || t.folder, { title: t.folder }));
+  c.append(pin, el("h3", t.prompt || "(no prompt)"), meta);
+  const line = t.error && t.state === "failed" ? t.error : t.summary || t.latest;
+  if (line) c.append(el("div", line, { className: "update" }));
+  const open = () => openTask(t);
+  c.addEventListener("click", open);
+  c.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  return c;
+}
+
+function openTask(t) {
+  document.querySelector('nav button[data-tab="runs"]').click();
+  if (t.runId) showRun(t.runId, { project: t.project, sessionId: t.sessionId });
+}
+
+function renderBoard() {
+  elapsedEls.clear();
+  const byNewest = (a, b) => b.createdAt.localeCompare(a.createdAt);
+  const rank = (t) => (t.pinned ? 0 : t.state === "waiting_for_you" ? 1 : 2);
+  const active = board.tasks.filter((t) => ACTIVE.includes(t.state) || t.pinned).sort((a, b) => rank(a) - rank(b) || byNewest(a, b));
+  const recent = board.tasks.filter((t) => !active.includes(t) && serverNow() - new Date(t.finishedAt || t.updatedAt) < DAY).sort(byNewest);
+  $("board-active").replaceChildren(...(active.length ? active.map(card) : [el("p", "Nothing active right now.")]));
+  $("board-recent").replaceChildren(...recent.map(card));
+  const waiting = board.tasks.filter((t) => t.state === "waiting_for_you").length;
+  $("badge").hidden = !waiting;
+  $("badge").textContent = String(waiting);
+  document.title = `${waiting ? `(${waiting}) ` : ""}Claude Code – local`;
+}
+
+function notifyNewWaiting(tasks) {
+  const states = new Map(tasks.map((t) => [t.id, t.state]));
+  if (knownStates) {
+    for (const t of tasks) {
+      if (t.state === "waiting_for_you" && knownStates.get(t.id) !== "waiting_for_you" && "Notification" in window && Notification.permission === "granted") {
+        try { new Notification("Claude is waiting for you", { body: t.prompt.slice(0, 120) }); } catch { /* ignore */ }
+      }
+    }
+  }
+  knownStates = states;
+}
+
+function applySnapshot(d) {
+  board = { tasks: d.tasks, fadeAfterMs: d.fadeAfterMs, skew: new Date(d.serverTime) - Date.now() };
+  notifyNewWaiting(d.tasks);
+  renderBoard();
+  if (!$("tab-runs").hidden && shownRun) showRun(shownRun);
+}
+
+setInterval(() => { for (const [span, t] of elapsedEls) span.textContent = fmtElapsed(elapsedOf(t)); }, 1000);
+
+if ("Notification" in window && Notification.permission === "default") {
+  $("enable-notify").hidden = false;
+  $("enable-notify").addEventListener("click", async () => { await Notification.requestPermission(); $("enable-notify").hidden = Notification.permission !== "default"; });
+}
+
+// Stream with fetch (not EventSource) so the token stays in the Authorization header, never in a URL.
+async function liveBoard() {
+  for (;;) {
+    try {
+      const res = await fetch("/api/tasks/stream", { headers: { authorization: `Bearer ${token}` } });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      $("live-state").textContent = "Live";
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const data = block.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
+          if (block.includes("event: tasks") && data) applySnapshot(JSON.parse(data));
+        }
+      }
+    } catch { /* fall through to polling */ }
+    $("live-state").textContent = "Reconnecting (polling)…";
+    for (let n = 0; n < 5; n++) { // polling fallback while the stream is down
+      try { applySnapshot(await api("/api/tasks")); } catch { /* keep trying */ }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+liveBoard();

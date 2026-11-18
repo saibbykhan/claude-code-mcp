@@ -3,6 +3,7 @@
 A small local browser app on top of the MCP server. Plain HTML, CSS and vanilla JS; no framework, no extra build step (it reuses the repo's `npm run build`).
 
 - **Chat**: pick an approved project, send a prompt (streamed output), continue a past session, read past sessions.
+- **Tasks**: a live card board. Every run started through the MCP tools or the web app becomes a task with a state (queued, running, waiting for you, done, failed, stopped), elapsed time, folder and a one-line update. Active cards sit at the top (waiting-for-you cards are highlighted, trigger a browser notification if allowed, and show a count badge); finished cards fade after 10 minutes (`CLAUDE_MCP_BOARD_FADE_MINUTES`); pin a card to keep it up. Click a card to open its conversation in **Runs**, where you can reply (continues the session) or Stop.
 - **Runs**: active and recent runs, read output, stop a run.
 - **Usage**: the 5-hour and weekly windows from `claude_usage` (cached values, with staleness shown).
 - **Simplified view**: a plain-language summary of the live conversation, written by a cheaper model.
@@ -42,6 +43,13 @@ When enabled, the web process takes the conversation text (run output, or the la
 
 Model: `haiku` by default. Change it with `CLAUDE_MCP_WEB_SUMMARY_MODEL=sonnet npm run web` (any alias or model id).
 
+## Task board internals
+
+- Tasks are stored in `<data dir>/tasks.json` (mode 600), written by the MCP server when `claude_run` starts a run. The web process reconciles them with `runs.json` and the run output every ~1.5 s while a page is open.
+- "Waiting for you" = the run's turn ended normally and the assistant's closing message asks a question or asks you to confirm/choose. It is a heuristic on the last assistant message only (tool output is ignored).
+- Live updates: `GET /api/tasks/stream` (Server-Sent Events, read with `fetch` so the token stays in the Authorization header). If the stream drops the page polls `GET /api/tasks`. Both go through the same token, Host and Origin checks as every other route, and all text is masked.
+- The one-line summary uses the same summarizer/model as the simplified view, in the background: one call at a time, throttled per task. If it fails, the card keeps its last good text and retries after a pause.
+
 ## Environment
 
 | Variable | Default |
@@ -49,6 +57,7 @@ Model: `haiku` by default. Change it with `CLAUDE_MCP_WEB_SUMMARY_MODEL=sonnet n
 | `CLAUDE_MCP_WEB_PORT` | `8787` |
 | `CLAUDE_MCP_WEB_TOKEN_FILE` | `<data dir>/web-token` |
 | `CLAUDE_MCP_WEB_SUMMARY_MODEL` | `haiku` |
+| `CLAUDE_MCP_BOARD_FADE_MINUTES` | `10` |
 | `CLAUDE_MCP_*` (data dir, config, claude bin…) | passed through to the MCP server |
 
 ## Tests

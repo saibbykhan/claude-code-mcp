@@ -7,10 +7,13 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { RunStore } from "../dist/src/runStore.js";
+import { TaskStore } from "../dist/src/taskStore.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { deepMask } from "../dist/src/mask.js";
 import { checkRequest, loadOrCreateToken } from "./lib/security.mjs";
+import { TaskSummarizer } from "./lib/boardSummary.mjs";
 import { summarize as defaultSummarize, summaryModel } from "./lib/summarizer.mjs";
 
 const HOST = "127.0.0.1"; // never configurable
@@ -49,15 +52,18 @@ function numeric(v) {
 }
 
 /** Build the HTTP server. `callTool(name, args)` returns the MCP CallToolResult; injectable for tests. */
-export function createWebServer({ port, token, callTool, summarize = defaultSummarize, claudeBin = "claude", env = process.env }) {
+export function createWebServer({ port, token, callTool, summarize = defaultSummarize, claudeBin = "claude", env = process.env, taskStore, runStore, tickMs = 1500, fadeAfterMs = 10 * 60_000 }) {
+  const baseHeaders = {
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "content-security-policy": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+  };
   const send = (res, status, body, headers = {}) => {
     const isStr = typeof body === "string";
     res.writeHead(status, {
       "content-type": isStr ? "text/plain; charset=utf-8" : "application/json",
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-      "referrer-policy": "no-referrer",
-      "content-security-policy": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+      ...baseHeaders,
       ...headers,
     });
     res.end(isStr ? body : JSON.stringify(deepMask(body)));
@@ -106,7 +112,39 @@ export function createWebServer({ port, token, callTool, summarize = defaultSumm
     throw new Error("Give a runId, or a folder and sessionId.");
   };
 
-  return http.createServer(async (req, res) => {
+  // ---- task board: reconcile tasks with their runs, summarize in the background, push changes over SSE
+  const clients = new Set();
+  let lastSnapshot = "";
+  const snapshot = () => JSON.stringify(deepMask({ tasks: taskStore ? taskStore.list() : [], fadeAfterMs, serverTime: new Date().toISOString() }));
+  const summarizer = taskStore && runStore
+    ? new TaskSummarizer({
+        summarize: (text) => summarize(text, { claudeBin, env, oneLine: true }),
+        getText: (t) => (t.runId ? runStore.readOutput(t.runId, 0, 100_000).output : ""),
+        save: (id, line) => taskStore.update(id, { summary: line }),
+        onChange: () => tick(),
+      })
+    : null;
+  function tick() {
+    if (!taskStore) return;
+    try {
+      if (runStore) taskStore.reconcile(runStore);
+      summarizer?.consider(taskStore.list());
+    } catch {
+      /* the board must never crash the server */
+    }
+    const snap = snapshot();
+    // serverTime changes every call; compare the tasks part only
+    const key = JSON.stringify(JSON.parse(snap).tasks);
+    if (key === lastSnapshot) return;
+    lastSnapshot = key;
+    for (const c of clients) c.write(`event: tasks\ndata: ${snap}\n\n`);
+  }
+  const timer = setInterval(() => { if (clients.size) tick(); }, tickMs);
+  timer.unref();
+  const keepAlive = setInterval(() => { for (const c of clients) c.write(": keep-alive\n\n"); }, 15_000);
+  keepAlive.unref();
+
+  const server = http.createServer(async (req, res) => {
     try {
       const gate = checkRequest(req, port, token);
       if (!gate.ok) return send(res, gate.status, { error: gate.error });
@@ -134,6 +172,27 @@ export function createWebServer({ port, token, callTool, summarize = defaultSumm
         const args = Object.fromEntries(Object.entries(body).filter(([k, v]) => allowed.includes(k) && v !== "" && v !== null));
         return await tool(res, POST_TOOLS[p], args);
       }
+      if (req.method === "GET" && p === "/api/tasks") {
+        tick();
+        return send(res, 200, JSON.parse(snapshot()));
+      }
+      if (req.method === "GET" && p === "/api/tasks/stream") {
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", connection: "keep-alive", ...baseHeaders });
+        res.write("retry: 3000\n\n");
+        clients.add(res);
+        res.on("close", () => clients.delete(res));
+        lastSnapshot = "";
+        tick();
+        if (!lastSnapshot) res.write(`event: tasks\ndata: ${snapshot()}\n\n`);
+        return;
+      }
+      if (req.method === "POST" && p === "/api/task/pin") {
+        const body = await readBody(req);
+        if (!taskStore || typeof body.taskId !== "string" || typeof body.pinned !== "boolean") return send(res, 400, { error: "taskId and pinned (true/false) are required." });
+        if (!taskStore.update(body.taskId, { pinned: body.pinned })) return send(res, 404, { error: "No such task." });
+        tick();
+        return send(res, 200, { ok: true });
+      }
       if (req.method === "POST" && p === "/api/summarize") {
         const body = await readBody(req);
         try {
@@ -143,11 +202,20 @@ export function createWebServer({ port, token, callTool, summarize = defaultSumm
           return send(res, 400, { error: e.message });
         }
       }
-      return send(res, STATIC[p] || GET_TOOLS[p] || POST_TOOLS[p] || p === "/api/summarize" ? 405 : 404, { error: "not found" });
+      return send(res, STATIC[p] || GET_TOOLS[p] || POST_TOOLS[p] || ["/api/summarize", "/api/tasks", "/api/tasks/stream", "/api/task/pin"].includes(p) ? 405 : 404, { error: "not found" });
     } catch (e) {
       if (!res.headersSent) send(res, e.status || 500, { error: e.status ? e.message : "internal error" });
     }
   });
+  const origClose = server.close.bind(server);
+  server.close = (cb) => {
+    clearInterval(timer);
+    clearInterval(keepAlive);
+    for (const c of clients) c.end();
+    clients.clear();
+    return origClose(cb);
+  };
+  return server;
 }
 
 async function main() {
@@ -170,7 +238,12 @@ async function main() {
   const callTool = (name, args) => client.callTool({ name, arguments: args });
   const claudeBin = process.env.CLAUDE_MCP_CLAUDE_BIN || "claude";
 
-  const server = createWebServer({ port, token, callTool, claudeBin });
+  const fadeMin = Number(process.env.CLAUDE_MCP_BOARD_FADE_MINUTES ?? 10);
+  const server = createWebServer({
+    port, token, callTool, claudeBin,
+    taskStore: new TaskStore(dataDir), runStore: new RunStore(dataDir),
+    fadeAfterMs: (Number.isFinite(fadeMin) && fadeMin > 0 ? fadeMin : 10) * 60_000,
+  });
   const shutdown = () => { server.close(); void client.close().finally(() => process.exit(0)); };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
